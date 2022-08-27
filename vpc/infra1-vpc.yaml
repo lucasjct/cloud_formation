@@ -1,0 +1,219 @@
+Resources:
+  # Criando meu VPC
+  NovoVPC: 
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.100.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-VPC
+
+  # Criando Internet Gateway
+  NovoInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    DependsOn: NovoVPC
+
+# Conectando InternetGateway com VPC
+  NovoAttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref NovoVPC
+      InternetGatewayId: !Ref NovoInternetGateway
+
+# Criando Subnet publica
+  NovaSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: 10.100.1.0/24
+      VpcId: !Ref NovoVPC
+      AvailabilityZone: !Select [0, !GetAZs '' ]
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-Publica
+        
+# Criando Subnet privada
+  NovaSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: 10.100.10.0/24
+      VpcId: !Ref NovoVPC
+      AvailabilityZone: !Select [0, !GetAZs '' ]
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-Privada
+
+# Criando o Elastic IP para o NAT Gateway
+  NATGatewayElasticIp:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: NovoVPC
+
+# Criando NAT Gateway
+  NovoNATGateway:  
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NATGatewayElasticIp.AllocationId
+      SubnetId: !Ref NovaSubnet1
+      Tags:
+      - Key: Name
+        Value: !Join ['', ["NAT-", !Ref "AWS::StackName"] ] 
+
+# Criando a Route Table Privada
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:  
+      VpcId: !Ref NovoVPC  
+      Tags:
+      - Key: Name
+        Value: Privada
+
+# Criando a Route privada conectando na Route Table Privada e no NAT Gateway
+  PrivateRoute1:
+    Type: AWS::EC2::Route
+    Properties:  
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NovoNATGateway
+
+# Criando a Route Table Publica
+  PublicaRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:  
+      VpcId: !Ref NovoVPC  
+      Tags:
+      - Key: Name
+        Value: Publica
+
+# Criando a Route Publica conectando na Route Table Privada e no NAT Gateway
+  PublicaRoute1:
+    Type: AWS::EC2::Route
+    Properties:  
+      RouteTableId: !Ref PublicaRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref NovoInternetGateway
+
+# Associando a tabela de rotas com a subnet publica
+  PublicRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: 
+      RouteTableId: !Ref PublicaRouteTable
+      SubnetId: !Ref NovaSubnet1
+
+
+# Associando a tabela de rotas com a subnet privada
+  PrivateRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: 
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref NovaSubnet2
+
+# Criando o Security Group Web
+  NovoWEBSecGroup: 
+    Type: AWS::EC2::SecurityGroup
+    Properties: 
+      GroupName: Webservers
+      GroupDescription: Sec Group para os Web Servers
+      VpcID: !Ref NovoVPC
+      SecurityGroupIngress:
+        - 
+          IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0      
+        - 
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - 
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+
+# Criando o Security Group Banco de Dados
+  NovoDBSecGroup: 
+    Type: AWS::EC2::SecurityGroup  
+    Properties: 
+      GroupName: Databases
+      GroupDescription: Sec Group para os Bancos de dados
+      VpcID: !Ref NovoVPC
+      SecurityGroupIngress:
+        - 
+          IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0      
+        - 
+          IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          CidrIp: 0.0.0.0/0
+
+# Criando volume para a instancia
+  DBVolume:  
+    Type: AWS::EC2::Volume  
+    DeletionPolicy: Snapshot  
+    Properties:  
+      AvailabilityZone: !Select [0, !GetAZs '' ]
+      Size: 64
+      Tags:
+        -
+          Key: Name
+          Value: data-volume
+      VolumeType: gp2 
+
+  NovaDBInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      BlockDeviceMappings: 
+        - 
+          DeviceName: "/dev/sda1"  
+          Ebs: 
+            VolumeSize: 24
+            VolumeType: gp2
+      InstanceType: t2.nano
+      ImageId: ami-052efd3df9dad4825
+      KeyName: access-instace
+      Monitoring: true
+      SecurityGroupIds: 
+        - !Ref NovoDBSecGroup
+      SubnetId: !Ref NovaSubnet2
+      Tags:
+        - 
+          Key: Name  
+          Value: !Sub ${AWS::StackName}-DB
+      Volumes: 
+        - 
+          Device: "/dev/sdf"
+          VolumeId: !Ref DBVolume
+
+# Criando um novo Elastic IP para a instância
+  NovoElasticIP:
+    Type: AWS::EC2::EIP
+    Properties: 
+      InstanceId: !Ref NovaWEBInstance
+      Domain: NovoVPC
+
+  NovaWEBInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      BlockDeviceMappings: 
+        - 
+          DeviceName: "/dev/sda1"  
+          Ebs: 
+            VolumeSize: 24
+            VolumeType: gp2
+      InstanceType: t2.nano
+      ImageId: ami-052efd3df9dad4825
+      KeyName: access-instace
+      Monitoring: true
+      SecurityGroupIds: 
+        - !Ref NovoWEBSecGroup
+      SubnetId: !Ref NovaSubnet1
+      Tags: 
+        -
+          Key: Name  
+          Value: !Sub ${AWS::StackName}-WEB
